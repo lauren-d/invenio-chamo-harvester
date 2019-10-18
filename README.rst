@@ -15,7 +15,7 @@
 
 Invenio module for collecting Virtua records using Chamo REST API
 
-This module works for RERO-ILS v0.0.1
+This module works for RERO-ILS v0.3.1
 
 Further documentation is available on
 https://invenio-chamo-harvester.readthedocs.io/
