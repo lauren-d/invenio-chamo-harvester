@@ -9,7 +9,7 @@
  Invenio-Chamo-Harvester
 =========================
 
-.. image:: https://img.shields.io/github/tag/lauren-d/invenio_chamo_harvester.svg
+.. image:: https://img.shields.io/github/tag/lauren-d/invenio-chamo-harvester.svg
         :alt: Release Number
         :target: https://github.com/lauren-d/invenio-chamo-harvester/releases/latest
 
