@@ -39,15 +39,26 @@ def chamo():
 @click.option('--yes-i-know', is_flag=True, callback=abort_if_false,
               expose_value=False,
               prompt='Do you really want to harvest all records?')
+@click.option('-f', '--file', type=click.File('r'), default=None)
 @with_appcontext
-def harvest_chamo(size, next_id, modified_since, verbose):
+def harvest_chamo(size, next_id, modified_since, verbose, file):
     """Harvest all records."""
-    click.secho('Sending records to harvesting queue ...', fg='green')
+    
     try:
-        count = queue_records_to_harvest(
-            next_id=next_id,
-            modified_since=modified_since,
-            size=size)
+        count = 0
+        if file:
+            click.secho('Reading records file to harvesting queue ...', fg='green')
+            records = []
+            for pid in file:
+                records.append(pid)
+            ChamoRecordHarvester().bulk_to_harvest(records)
+            count=len(records)
+        else :
+            click.secho('Sending records to harvesting queue ...', fg='green')
+            count = queue_records_to_harvest(
+                next_id=next_id,
+                modified_since=modified_since,
+                size=size)
         click.secho(
             'Records queued: {count}'.format(count=count),
             fg='blue'
@@ -59,7 +70,6 @@ def harvest_chamo(size, next_id, modified_since, verbose):
             'Harvesting Error: {e}'.format(e=e),
             fg='red'
         )
-
 
 @chamo.command("run")
 @click.option('--delayed', '-d', is_flag=True,
@@ -81,7 +91,7 @@ def run(delayed, concurrency):
             process_bulk_queue.apply_async(**celery_kwargs)
     else:
         click.secho('Retrieve queued records...', fg='green')
-        ChamoRecordHarvester(version_type=None).process_bulk_queue()
+        ChamoRecordHarvester().process_bulk_queue()
 
 
 @chamo.group(chain=True)

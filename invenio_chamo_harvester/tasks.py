@@ -24,6 +24,7 @@ from invenio_jsonschemas import current_jsonschemas
 
 from rero_ils.modules.documents.api import Document, DocumentsSearch
 from rero_ils.modules.items.api import Item
+from rero_ils.modules.holdings.api import Holding
 
 from .api import ChamoRecordHarvester
 from .utils import extract_records_id, map_item_type, map_locations
@@ -36,11 +37,11 @@ def process_bulk_queue(version_type=None):
     :param str version_type: Elasticsearch version type.
     Note: You can start multiple versions of this task.
     """
-    ChamoRecordHarvester(version_type=version_type).process_bulk_queue()
+    ChamoRecordHarvester().process_bulk_queue()
 
 
 @shared_task(ignore_result=True)
-def queue_records_to_harvest(size=100, next_id=None, modified_since=None,
+def queue_records_to_harvest(size=1000, next_id=None, modified_since=None,
                              verbose=False):
     """Queue records to harvest from Chamo Rest API."""
     uri = '{base_url}/{route}?all=true&batchSize={size}'.format(
@@ -108,10 +109,12 @@ def bulk_records(records):
     record_schema = current_jsonschemas.path_to_url(
         'documents/document-v0.0.1.json')
     item_schema = current_jsonschemas.path_to_url('items/item-v0.0.1.json')
+    holding_schema = current_jsonschemas.path_to_url('holdings/holding-v0.0.1.json')
     host_url = current_app.config.get('RERO_ILS_APP_BASE_URL')
     url_api = '{host}/api/{doc_type}/{pid}'
     record_id_iterator = []
     item_id_iterator = []
+    holding_id_iterator = []
     indexer = RecordIndexer()
     start_time = datetime.now()
     for record in records:
@@ -152,8 +155,28 @@ def bulk_records(records):
                 uri_documents = url_api.format(host=host_url,
                                                doc_type='documents',
                                                pid=document.pid)
-                if record.get("items") or record.get('holdings'):
-                    for item in record.get('items') + record.get('holdings'):
+                if record.get('holdings'):
+                    for holding in record.get('holdings'):
+                        holding['$schema'] = holding_schema
+                        holding['document'] = {
+                            '$ref': uri_documents
+                            }
+                        holding['circulation_category'] = {
+                            '$ref': map_item_type(str(holding.get('circulation_category')))
+                            }
+                        holding['location'] = {
+                            '$ref': map_locations(str(holding.get('location')))
+                            }
+                        
+                        result = Holding.create(
+                            holding,
+                            dbcommit=False,
+                            reindex=False
+                        )
+                        holding_id_iterator.append(result.id)
+                
+                if record.get("items"):
+                    for item in record.get('items'):
                         item['$schema'] = item_schema
                         item['document'] = {
                             '$ref': uri_documents
@@ -164,9 +187,6 @@ def bulk_records(records):
                         item['location'] = {
                             '$ref': map_locations(str(item.get('location')))
                             }
-                        if item.get('barcode') is None:
-                            item['barcode'] = 'MISSING-{timestamp}'.format(
-                                timestamp=int(round(time.time() * 1000)))
                         result = Item.create(
                             item,
                             dbcommit=False,
@@ -174,8 +194,9 @@ def bulk_records(records):
                         )
                         item_id_iterator.append(result.id)
 
+
                 n_created += 1
-            if n_created % 10 == 0:
+            if n_created % 1000 == 0:
                 db.session.commit()
                 execution_time = datetime.now() - start_time
                 click.secho('{nb} commited records in {execution_time}.'
@@ -183,6 +204,11 @@ def bulk_records(records):
                                     execution_time=execution_time),
                             fg='white')
                 start_time = datetime.now()
+                click.secho('sending {n} holdings to indexer queue.'
+                            .format(n=len(holding_id_iterator)), fg='white')
+                indexer.bulk_index(holding_id_iterator)
+                click.secho('process queue...', fg='yellow')
+                indexer.process_bulk_queue()
                 click.secho('sending {n} items to indexer queue.'
                             .format(n=len(item_id_iterator)), fg='white')
                 indexer.bulk_index(item_id_iterator)
@@ -200,6 +226,7 @@ def bulk_records(records):
                 click.secho('processing next batch records.', fg='green')
 
                 record_id_iterator.clear()
+                holding_id_iterator.clear()
                 item_id_iterator.clear()
                 start_time = datetime.now()
         except Exception as e:
@@ -207,6 +234,8 @@ def bulk_records(records):
             click.secho('Error processing record [{id}] : {e}'
                         .format(id=record.get('_id'), e=e), fg='red')
     db.session.commit()
+    indexer.bulk_index(holding_id_iterator)
+    indexer.process_bulk_queue()
     indexer.bulk_index(item_id_iterator)
     indexer.process_bulk_queue()
     indexer.bulk_index(record_id_iterator)
