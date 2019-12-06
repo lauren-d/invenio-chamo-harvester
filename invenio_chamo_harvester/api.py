@@ -172,10 +172,11 @@ class ChamoRecordHarvester(object):
         :param payload: Decoded message body.
         :returns: Dictionary defining an Elasticsearch bulk 'index' action.
         """
-        record = ChamoBibRecord.get_record_by_uri(payload['uri'])
-
-        data = self._prepare_record(record)
-
+        
+        record = ChamoBibRecord.get_record_by_uri(payload['uri'])     
+        
+        data = self._prepare_record(record)     
+        
         action = {
             '_op_type': 'harvest',
             '_id': str(payload['id']),

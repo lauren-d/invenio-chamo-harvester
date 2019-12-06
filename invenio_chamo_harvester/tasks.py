@@ -106,8 +106,7 @@ def bulk_records(records):
     n_updated = 0
     n_rejected = 0
     n_created = 0
-    record_schema = current_jsonschemas.path_to_url(
-        'documents/document-v0.0.1.json')
+    record_schema = current_jsonschemas.path_to_url('documents/document-v0.0.1.json')
     item_schema = current_jsonschemas.path_to_url('items/item-v0.0.1.json')
     holding_schema = current_jsonschemas.path_to_url('holdings/holding-v0.0.1.json')
     host_url = current_app.config.get('RERO_ILS_APP_BASE_URL')
@@ -144,59 +143,89 @@ def bulk_records(records):
                     """
                 document['$schema'] = record_schema
 
+                created_time = datetime.now()
                 document = Document.create(
                     document,
                     dbcommit=False,
                     reindex=False
                 )
-
+                
                 record_id_iterator.append(document.id)
 
                 uri_documents = url_api.format(host=host_url,
                                                doc_type='documents',
                                                pid=document.pid)
-                if record.get('holdings'):
-                    for holding in record.get('holdings'):
-                        holding['$schema'] = holding_schema
-                        holding['document'] = {
-                            '$ref': uri_documents
-                            }
-                        holding['circulation_category'] = {
-                            '$ref': map_item_type(str(holding.get('circulation_category')))
-                            }
-                        holding['location'] = {
-                            '$ref': map_locations(str(holding.get('location')))
-                            }
-                        
-                        result = Holding.create(
-                            holding,
-                            dbcommit=False,
-                            reindex=False
-                        )
-                        holding_id_iterator.append(result.id)
                 
-                if record.get("items"):
-                    for item in record.get('items'):
-                        item['$schema'] = item_schema
-                        item['document'] = {
-                            '$ref': uri_documents
-                            }
-                        item['item_type'] = {
-                            '$ref': map_item_type(str(item.get('item_type')))
-                            }
-                        item['location'] = {
-                            '$ref': map_locations(str(item.get('location')))
-                            }
-                        result = Item.create(
-                            item,
-                            dbcommit=False,
-                            reindex=False
-                        )
-                        item_id_iterator.append(result.id)
+                map_holdings = {}
+                for holding in record.get('holdings'):
+                    holding['$schema'] = holding_schema
+                    holding['document'] = {
+                        '$ref': uri_documents
+                        }
+                    holding['circulation_category'] = {
+                        '$ref': map_item_type(str(holding.get('circulation_category')))
+                        }
+                    holding['location'] = {
+                        '$ref': map_locations(str(holding.get('location')))
+                        }
+                    
+                    created_time = datetime.now()
 
+                    result = Holding.create(
+                        holding,
+                        dbcommit=False,
+                        reindex=False
+                    )
+                    
+                    map_holdings.update({
+                            '{location}#{cica}'.format(
+                                location = holding.get('location'),
+                                cica = holding.get('circulation_category')) : result.get('pid')
+                        }
+                    )
+                    
+                    holding_id_iterator.append(result.id)
+                
+                for item in record.get('items'):
+                    item['$schema'] = item_schema
+                    item['document'] = {
+                        '$ref': uri_documents
+                        }
+                    item['item_type'] = {
+                        '$ref': map_item_type(str(item.get('item_type')))
+                        }
+                    item['location'] = {
+                        '$ref': map_locations(str(item.get('location')))
+                        }
+
+                    holding_pid = map_holdings.get(
+                        '{location}#{cica}'.format(
+                            location = item.get('location'),
+                            cica = item.get('item_type')))
+
+                    item['holding'] = {
+                        '$ref': url_api.format(host=host_url,
+                                    doc_type='holdings',
+                                    pid=holding_pid)
+                        }
+                    
+                    result = Item.create(
+                        item,
+                        dbcommit=False,
+                        reindex=False
+                    )
+
+                    item_id_iterator.append(result.id)
 
                 n_created += 1
             if n_created % 1000 == 0:
+                execution_time = datetime.now() - start_time
+                click.secho('{nb} created records in {execution_time}.'
+                            .format(nb=len(record_id_iterator),
+                                    execution_time=execution_time),
+                            fg='white')
+                start_time = datetime.now()
+
                 db.session.commit()
                 execution_time = datetime.now() - start_time
                 click.secho('{nb} commited records in {execution_time}.'
