@@ -76,15 +76,47 @@ def remove_punctuation(data):
     return data
 
 
+def get_language_script(script):
+    """Build the language script code.
+
+    This code is built according to the format
+    <lang_code>-<script_code> for example: chi-hani;
+    the <lang_code> is retrived from field 008 and 041
+    the <script_code> is received as parameter
+    """
+    languages_scripts = {
+        'arab': ('ara', 'per'),
+        'cyrl': ('bel', 'chu', 'mac', 'rus', 'srp', 'ukr'),
+        'grek': ('grc', 'gre'),
+        'hani': ('chi', 'jpn'),
+        'hebr': ('heb', 'lad', 'yid'),
+        'jpan': ('jpn', ),
+        'kore': ('kor', ),
+        'zyyy': ('chi', )
+    }
+    if script in languages_scripts:
+        languages = ([marc21.lang_from_008] +
+                        marc21.langs_from_041_a +
+                        marc21.langs_from_041_h)
+        for lang in languages:
+            if lang in languages_scripts[script]:
+                return '-'.join([lang, script])
+        error_print('WARNING LANGUAGE SCRIPTS:', marc21.bib_id,
+                    script,  '008:', marc21.lang_from_008,
+                    '041$a:', marc21.langs_from_041_a,
+                    '041$h:', marc21.langs_from_041_h)
+    return '-'.join(['und', script])
+
+
 def get_mef_person_link(id, key, value):
     """Get mef person link."""
     # https://mef.test.rero.ch/api/mef/?q=viaf_pid:67752559
-    PROD_HOST = 'mef.rero.ch'
-    DEV_HOST = 'mefdev.test.rero.ch'
-    mef_url = None
+    prod_host = 'mef.rero.ch'
+    test_host = 'mef.test.rero.ch'
+    mef_link = None
     if id:
         url = "{mef}/?q=viaf_pid:{viaf_pid}&size=1".format(
-            mef="https://{host}/api/mef".format(host=DEV_HOST),
+            mef="https://{host}/api/mef".format(host=test_host),
             viaf_pid=id,
         )
         request = requests.get(url=url)
@@ -92,9 +124,9 @@ def get_mef_person_link(id, key, value):
             data = request.json()
             hits = data.get('hits', {}).get('hits')
             if hits:
-                mef_url = hits[0].get('links').get('self')
-                mef_url = mef_url.replace(DEV_HOST, PROD_HOST)
-    return mef_url
+                mef_link = hits[0].get('links').get('self')
+                mef_link = mef_link.replace(test_host, prod_host)
+    return mef_link
 
 
 @marc21.over('type', 'leader')
@@ -130,23 +162,16 @@ def marc21_to_type(self, key, value):
 
     return 'score'
 
-
-@marc21.over('identifiedBy', '^001')
+@marc21.over('pid', '^001')
 @utils.ignore_value
-def marc21_to_identifier_vtlsID(self, key, value):
-    """Get identifier vtlsID.
-
-    identifiers:vtlsID: 001
+def marc21_to_pid(self, key, value):
+    """Get pid.
+    If 001 starts with 'vtls:' save as pid.
     """
-    identifiers = self.get('identifiedBy', [])
-    identifier = {
-        'type': 'bf:Local',
-        'source': 'VIRTUA',
-        'value': value
-    }
-    identifiers.append(identifier)
-    return identifiers
-
+    pid = None
+    if(value.startswith('vtls')):
+        pid = re.sub('^vtls[0]+', '', value)
+    return pid
 
 @marc21.over('language', '^008')
 @utils.ignore_value
@@ -337,7 +362,7 @@ def marc21_to_author(self, key, value):
     else:
         return None
 
-@marc21.over('copyrightDate', '^260..')
+@marc21.over('copyrightDate', '^264.4')
 @utils.ignore_value
 def marc21_to_copyright_date(self, key, value):
     """Get Copyright Date."""
@@ -404,90 +429,61 @@ def marc21_to_edition_statement(self, key, value):
             index += 1
     return edition_data or None
 
-@marc21.over('provisionActivity', '^260.[_0-3]')
+@marc21.over('provisionActivity', '^260..')
 @utils.for_each_value
 @utils.ignore_value
 def marc21_to_provisionActivity(self, key, value):
     """Get publisher data.
-    publisher.name: 264 [$b repetitive] (without the , but keep the ;)
-    publisher.place: 264 [$a repetitive] (without the : but keep the ;)
-    publicationDate: 264 [$c repetitive] (but take only the first one)
+    publisher.name: 260 [$b repetitive] (without the , but keep the ;)
+    publisher.place: 260 [$a repetitive] (without the : but keep the ;)
+    publicationDate: 260 [$c repetitive] (but take only the first one)
     """
     def build_statement(field_value, ind2):
 
-        def get_language_script(script):
-            languages_scripts = {
-                'arab': ('ara', 'per'),
-                'cyrl': ('bel', 'chu', 'mac', 'rus', 'srp', 'ukr'),
-                'grek': ('grc', 'gre'),
-                'hani': ('chi', 'jpn'),
-                'hebr': ('heb', 'lad', 'yid'),
-                'jpan': ('jpn', ),
-                'kore': ('kor', ),
-                'zyyy': ('chi', )
-            }
-            if script in languages_scripts:
-                languages = ([marc21.lang_from_008] +
-                             marc21.langs_from_041_a +
-                             marc21.langs_from_041_h)
-                for lang in languages:
-                    if lang in languages_scripts[script]:
-                        return '-'.join([lang, script])
-                error_print('WARNING LANGUAGE SCRIPTS:', marc21.bib_id,
-                            script,  '008:', marc21.lang_from_008,
-                            '041$a:', marc21.langs_from_041_a,
-                            '041$h:', marc21.langs_from_041_h)
-            return '-'.join(['und', script])
-
-        def build_place_or_agent_data(code, label, index, link, add_country):
+        def build_agent_data(code, label, index, link):
             type_per_code = {
                 'a': 'bf:Place',
                 'b': 'bf:Agent'
             }
-            place_or_agent_data = {
+            agent_data = {
                 'type': type_per_code[code],
                 'label': [{'value': remove_trailing_punctuation(label)}]
             }
-
-            if add_country:
-                if marc21.country:
-                    place_or_agent_data['country'] = marc21.country
             try:
                 alt_gr = marc21.alternate_graphic['260'][link]
                 subfield = \
                     marc21.get_subfields(alt_gr['field'])[index]
-                place_or_agent_data['label'].append({
+                agent_data['label'].append({
                     'value': remove_trailing_punctuation(subfield),
                     'language': get_language_script(alt_gr['script'])
                 })
             except Exception as err:
                 pass
-            return place_or_agent_data
+            return agent_data
 
         # function build_statement start here
-        subfield_6 = field_value.get('6', '')
-        tag_link = subfield_6.split('-')
-        link = ''
-        if len(tag_link) == 2:
-            link = tag_link[1]
-
+        tag_link, link = get_field_link_data(field_value)
+        items = get_field_items(field_value)
         statement = []
-        if isinstance(field_value, utils.GroupableOrderedDict):
-            items = field_value.iteritems(repeated=True)
-        else:
-            items = utils.iteritems(field_value)
         index = 1
-        add_country = ind2 in ('_', '1')
         for blob_key, blob_value in items:
             if blob_key in ('a', 'b'):
-                place_or_agent_data = build_place_or_agent_data(
-                    blob_key, blob_value, index, link, add_country)
-                if blob_key == 'a':
-                    add_country = False
-                statement.append(place_or_agent_data)
+                agent_data = build_agent_data(
+                    blob_key, blob_value, index, link)
+                statement.append(agent_data)
             if blob_key != '__order__':
                 index += 1
         return statement
+
+    def build_place():
+        place = {}
+        if marc21.cantons:
+            place['canton'] = marc21.cantons[0]
+        if marc21.country:
+            place['country'] = marc21.country
+        if place:
+            place['type'] = 'bf:Place'
+        return place
 
     # the function marc21_to_provisionActivity start here
     ind2 = key[4]
@@ -504,21 +500,40 @@ def marc21_to_provisionActivity(self, key, value):
     }
 
     subfields_c = utils.force_list(value.get('c'))
-    if subfields_c:
-        subfield_c = subfields_c[0]
-        publication['date'] = subfield_c
-    click.echo(publication)
     if ind2 in ('_', '1'):
-        publication['startDate'] = marc21.date1_from_008
-        click.echo(publication['startDate'])
-        if (marc21.date_type_from_008 != 'r' and
-                marc21.date2_from_008 and
-                marc21.date2_from_008 not in ('    ', '||||', '9999')):
-            publication['endDate'] = marc21.date2_from_008
+        start_date = make_year(marc21.date1_from_008)
+        if start_date:
+            publication['startDate'] = start_date
+        end_date = make_year(marc21.date2_from_008)
+        if end_date:
+            publication['endDate'] = end_date
         if (marc21.date_type_from_008 == 'q' or
                 marc21.date_type_from_008 == 'n'):
             publication['note'] = 'Date(s) incertaine(s) ou inconnue(s)'
+        place = build_place()
+        if place:
+            publication['place'] = [place]
     publication['statement'] = build_statement(value, ind2)
+    if subfields_c:
+        subfield_c = subfields_c[0]
+        date = {
+            'label': [{'value': subfield_c}],
+            'type': 'Date'
+        }
+
+        tag_link, link = get_field_link_data(value)
+        try:
+            alt_gr = marc21.alternate_graphic['260'][link]
+            subfield = \
+                marc21.get_subfields(alt_gr['field'], code='c')
+            date['label'].append({
+                    'value': subfield[0],
+                    'language': get_language_script(alt_gr['script'])
+            })
+        except Exception as err:
+            pass
+
+        publication['statement'].append(date)
     return publication or None
 
 
