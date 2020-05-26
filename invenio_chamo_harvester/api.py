@@ -173,8 +173,7 @@ class ChamoRecordHarvester(object):
         :returns: Dictionary defining an Elasticsearch bulk 'index' action.
         """
         
-        record = ChamoBibRecord.get_record_by_uri(payload['uri'])     
-        
+        record = ChamoBibRecord.get_record_by_uri(payload['uri'])
         data = self._prepare_record(record)     
         
         action = {
@@ -233,7 +232,12 @@ class ChamoBibRecord(object):
     @property
     def isFrbr(self):
         """The linked items of bibliographic record."""
-        return True if self.data.get('frbrType') is None else False
+        return False if self.data.get('frbrType') is None else True
+
+    @property
+    def isMasked(self):
+        """The linked items of bibliographic record."""
+        return False if self.data.get('masked') is None else True
 
     @property
     def raw(self):
@@ -263,13 +267,13 @@ class ChamoBibRecord(object):
         return self.data.get('holdings') or []
 
     @classmethod
-    def get_record_by_uri(self, uri):
+    def get_record_by_uri(cls, uri):
         """Get chamo record by uri value."""
         try:
             request = requests.get(uri, auth=(
                 current_app.config['CHAMO_HARVESTER_CHAMO_USER'],
                 current_app.config['CHAMO_HARVESTER_CHAMO_PASSWORD']))
-            return self(request.json())
+            return cls(request.json())
         except Exception as e:
             click.secho(
                 'Get ressource Error: {e}'.format(e=e),
@@ -278,17 +282,20 @@ class ChamoBibRecord(object):
             return None
     
     @classmethod
-    def get_record_by_id(self, id):
+    def get_record_by_id(cls, id):
         """Get chamo record by id value."""
         try:
-            uri = uri='{base_url}/invenio/bib/{id}'.format(
+            uri='{base_url}/invenio/bib/{id}'.format(
                 base_url=current_app.config['CHAMO_HARVESTER_CHAMO_BASE_URL'],
                 id=str(id))
             
             request = requests.get(uri, auth=(
                 current_app.config['CHAMO_HARVESTER_CHAMO_USER'],
                 current_app.config['CHAMO_HARVESTER_CHAMO_PASSWORD']))
-            return self(request.json())
+
+            data = request.json()
+            data['_id']=id
+            return ChamoBibRecord(data)
         except Exception as e:
             click.secho(
                 'Get ressource Error: {e}'.format(e=e),

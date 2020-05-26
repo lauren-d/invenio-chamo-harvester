@@ -41,7 +41,7 @@ def chamo():
 
 @chamo.command("harvest")
 @click.option('-s', '--size', type=int, default=1000)
-@click.option('-n', '--next-id', type=int, default=0)
+@click.option('-n', '--next-id', type=int, default=1)
 @click.option('-m', '--modified-since', default=None)
 @click.option('-v', '--verbose', is_flag=True, default=False)
 @click.option('--yes-i-know', is_flag=True, callback=abort_if_false,
@@ -108,7 +108,11 @@ def run(delayed, concurrency):
 def record(bibid):
     """Run transform to invenio record."""
     if bibid>0:
-        print(json.dumps(bulk_record(ChamoBibRecord.get_record_by_id(bibid))))
+        try:
+            print(json.dumps(
+                bulk_record(ChamoBibRecord.get_record_by_id(bibid))))
+        except:
+            pass
 
 @chamo.command("document")
 @click.option('--bibid', '-i', default=0, type=int,
