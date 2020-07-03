@@ -119,7 +119,7 @@ def bulk_records(records):
     record_schema = current_jsonschemas.path_to_url('documents/document-v0.0.1.json')
     item_schema = current_jsonschemas.path_to_url('items/item-v0.0.1.json')
     holding_schema = current_jsonschemas.path_to_url('holdings/holding-v0.0.1.json')
-    host_url = current_app.config.get('RERO_ILS_APP_BASE_URL')
+    host_url = current_app.config.get('RERO_ILS_APP_URL')
     url_api = '{host}/api/{doc_type}/{pid}'
     required = ['pid', 'type', 'title', 'language']
     record_id_iterator = []
@@ -197,7 +197,7 @@ def bulk_records(records):
                 item['location'] = {
                     '$ref': map_locations(str(item.get('location')))
                     }
-
+                item['type'] = 'standard'
                 holding_pid = map_holdings.get(
                     '{location}#{cica}'.format(
                         location = item.get('location'),
