@@ -131,6 +131,7 @@ def bulk_records(records):
         try:
             if record.get('frbr'):
                 raise Exception('FRBR record cannot be processed')
+            # TODO: check chamo:2033646 => record is masked
             if record.get('masked'):
                 raise Exception('masked record will be not processed')
             document = record.get('document', {})
