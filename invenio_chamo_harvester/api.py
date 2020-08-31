@@ -99,7 +99,7 @@ class ChamoRecordHarvester(object):
                       'harvest',
                       current_app.config['CHAMO_HARVESTER_CHAMO_BASE_URL'])
 
-    def process_bulk_queue(self):
+    def process_bulk_queue(self, bulk_kwargs=None):
         """Process bulk harvesting queue."""
         from .tasks import bulk_records
         count = 0
@@ -113,7 +113,8 @@ class ChamoRecordHarvester(object):
                 )
 
                 count = bulk_records(
-                    self._actionsiter(consumer.iterqueue())
+                    self._actionsiter(consumer.iterqueue()),
+                    bulk_kwargs
                 )
                 consumer.close()
             except Exception as e:
@@ -237,7 +238,7 @@ class ChamoBibRecord(object):
     @property
     def isMasked(self):
         """The linked items of bibliographic record."""
-        return False if self.data.get('masked') is None else True
+        return self.data.get('masked', False)
 
     @property
     def raw(self):

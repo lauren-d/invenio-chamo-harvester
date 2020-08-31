@@ -18,14 +18,18 @@ import sys
 import click
 import requests
 from celery import shared_task
+from copy import deepcopy
 from flask import current_app
 from invenio_db import db
 from rero_ils.modules.api import IlsRecordsIndexer
 from invenio_jsonschemas import current_jsonschemas
+from invenio_pidstore.models import PersistentIdentifier
 from rero_ils.modules.documents.api import Document, DocumentsSearch
 from rero_ils.modules.documents.models import DocumentIdentifier
 from rero_ils.modules.holdings.api import Holding
+from rero_ils.modules.holdings.models import HoldingIdentifier
 from rero_ils.modules.items.api import Item
+from rero_ils.modules.items.models import ItemIdentifier
 from .utils import get_max_record_pid
 
 from .api import ChamoRecordHarvester
@@ -33,13 +37,13 @@ from .utils import extract_records_id, map_item_type, map_locations
 
 
 @shared_task(ignore_result=True)
-def process_bulk_queue(version_type=None):
+def process_bulk_queue(bulk_kwargs=None):
     """Process bulk harvesting queue.
 
     :param str version_type: Elasticsearch version type.
     Note: You can start multiple versions of this task.
     """
-    ChamoRecordHarvester().process_bulk_queue()
+    ChamoRecordHarvester().process_bulk_queue(bulk_kwargs)
 
 
 @shared_task(ignore_result=True)
@@ -108,9 +112,10 @@ def delete_record(record_uuid):
 
 
 @shared_task(ignore_result=True)
-def bulk_records(records):
+def bulk_records(records, bulk_kwargs=None):
     """Records bulk creation."""
     bulk_size = current_app.config['CHAMO_HARVESTER_BULK_SIZE']
+    initial_import = bulk_kwargs.pop('initial_load')
     current_app.logger.info('harverster bulk size : {size}'.format(
         size=bulk_size))
     n_updated = 0
@@ -122,6 +127,8 @@ def bulk_records(records):
     host_url = current_app.config.get('RERO_ILS_APP_URL')
     url_api = '{host}/api/{doc_type}/{pid}'
     required = ['pid', 'type', 'title', 'language']
+    bulk_delete_item = []
+    bulk_delete_hold = []
     record_id_iterator = []
     item_id_iterator = []
     holding_id_iterator = []
@@ -139,94 +146,135 @@ def bulk_records(records):
                 raise Exception('missing required {f} properties for record'
                                 .format(f=required))
 
+            print('DOCUMENT:', document)
+
             # TODO: create task to update records
-            # check if already in Rero-ILS
-            # rec = Document.get_record_by_pid(document.get('pid'))
-            # if rec:
-            #     print(rec)
-            document['$schema'] = record_schema
+            if not initial_import:
+                # check if already in Rero-ILS
+                rec = Document.get_record_by_pid(document.get('pid'))
 
-            current_app.logger.info('create document')
-            document = Document.create(
-                document,
-                dbcommit=False,
-                reindex=False
-            )
-            record_id_iterator.append(document.id)
-            db.session.add(DocumentIdentifier(recid=document.get('pid')))
-            uri_documents = url_api.format(host=host_url,
-                                        doc_type='documents',
-                                        pid=document.get('pid'))
-            holdings_type = 'serial' if document.get(
-                'type') == 'journal' else 'standard'
-            map_holdings = {}
-            for holding in record.get('holdings'):
-                holding['$schema'] = holding_schema
-                holding['holdings_type'] = holdings_type
-                holding['document'] = {
-                    '$ref': uri_documents
-                    }
-                holding['circulation_category'] = {
-                    '$ref': map_item_type(str(holding.get('circulation_category')))
-                    }
-                holding['location'] = {
-                    '$ref': map_locations(str(holding.get('location')))
-                    }
+            if rec:
+                # UPDATE DOCUMENT
+                doc_pid = rec.get('pid')
+                for ite_obj in Item.get_items_pid_by_document_pid(doc_pid):
+                    try:
+                        item_pid = ite_obj.get('value')
+                        item = Item.get_record_by_pid(item_pid)
+                        if item:
+                            item.delete(force=True, dbcommit=True, delindex=True)
+                        else :
+                            # TODO: delete by id
+                            pass
+                    except Exception as e:
+                        print('ERROR deleting item:', e)
+                        pass
 
-                result = Holding.create(
-                    holding,
+                # update document
+                document['$schema'] = record_schema
+                current_app.logger.info('update document')
+                document = rec.replace(
+                    document,
                     dbcommit=False,
                     reindex=False
                 )
+                record_id_iterator.append(document.id)
+            else:
+                # NEW DOCUMENT
+                document['$schema'] = record_schema
+                current_app.logger.info('create document')
+                document = Document.create(
+                    document,
+                    dbcommit=False,
+                    reindex=False
+                )
+                db.session.add(DocumentIdentifier(recid=document.get('pid')))
+                record_id_iterator.append(document.id)
+                uri_documents = url_api.format(host=host_url,
+                                            doc_type='documents',
+                                            pid=document.get('pid'))
 
-                map_holdings.update({
+                document_type = document.get('type')
+
+                # HOLDINGS
+                map_holdings = {}
+                items = record.get('items', [])
+                for holding in record.get('holdings'):
+                    new_holding = {}
+                    new_holding = deepcopy(holding)
+                    new_holding['$schema'] = holding_schema
+
+                    new_holding['document'] = {
+                        '$ref': uri_documents
+                        }
+                    new_holding['circulation_category'] = {
+                        '$ref': map_item_type(str(holding.get('circulation_category')))
+                        }
+                    new_holding['location'] = {
+                        '$ref': map_locations(str(holding.get('location')))
+                        }
+                    holding_map = '{location}#{cica}'.format(
+                                location = holding.get('location'),
+                                cica = holding.get('circulation_category'))
+
+                    # holding without items must be serial
+                    holdings_type = 'serial'\
+                        if document_type == 'journal'\
+                        and not has_items(holding_map, items) else 'standard'
+                    new_holding['holdings_type'] = holdings_type
+                    result = Holding.create(
+                        new_holding,
+                        dbcommit=False,
+                        reindex=False
+                    )
+
+                    map_holdings.update({
+                            holding_map: result.get('pid')
+                        }
+                    )
+                    holding_id_iterator.append(result.id)
+
+                # ITEMS
+                for item in items:
+                    new_item = deepcopy(item)
+                    new_item['$schema'] = item_schema
+                    new_item['document'] = {
+                        '$ref': uri_documents
+                        }
+                    new_item['item_type'] = {
+                        '$ref': map_item_type(str(item.get('item_type')))
+                        }
+                    new_item['location'] = {
+                        '$ref': map_locations(str(item.get('location')))
+                        }
+                    new_item['type'] = 'standard'
+                    # item['type'] = 'standard' if holdings_type == 'standard' \
+                    #     else 'issue'
+                    holding_pid = map_holdings.get(
                         '{location}#{cica}'.format(
-                            location = holding.get('location'),
-                            cica = holding.get('circulation_category')) : result.get('pid')
-                    }
-                )
-                holding_id_iterator.append(result.id)
-
-            for item in record.get('items'):
-                item['$schema'] = item_schema
-                item['document'] = {
-                    '$ref': uri_documents
-                    }
-                item['item_type'] = {
-                    '$ref': map_item_type(str(item.get('item_type')))
-                    }
-                item['location'] = {
-                    '$ref': map_locations(str(item.get('location')))
-                    }
-                item['type'] = 'standard'
-                holding_pid = map_holdings.get(
-                    '{location}#{cica}'.format(
-                        location = item.get('location'),
-                        cica = item.get('item_type')))
-                if holding_pid is None:
-                    click.secho('holding pid is None for record : {id} '.format(
-                        id=document.pid
-                    ), fg='red')
-                    click.secho('holding map : {map}.'.format(
-                        map=map_holdings), fg='white')
-                    click.secho('item to map : {location}#{cica}'.format(
-                        location = item.get('location'),
-                        cica = item.get('item_type')), fg='yellow')
-
-                item['holding'] = {
-                    '$ref': url_api
-                        .format(host=host_url,
-                                doc_type='holdings',
-                                pid=holding_pid)
-                    }
-
-                result = Item.create(
-                    item,
-                    dbcommit=False,
-                    reindex=False
-                )
-                item_id_iterator.append(result.id)
-            n_created += 1
+                            location = item.get('location'),
+                            cica = item.get('item_type')))
+                    if holding_pid is None:
+                        click.secho('holding pid is None for record : {id} '.format(
+                            id=document.pid
+                        ), fg='red')
+                        click.secho('holding map : {map}.'.format(
+                            map=map_holdings), fg='white')
+                        click.secho('item to map : {location}#{cica}'.format(
+                            location = item.get('location'),
+                            cica = item.get('item_type')), fg='yellow')
+                    new_item['holding'] = {
+                        '$ref': url_api.format(
+                            host=host_url,
+                            doc_type='holdings',
+                            pid=holding_pid)
+                        }
+                    result = Item.create(
+                        new_item,
+                        dbcommit=False,
+                        reindex=False
+                    )
+                    item_id_iterator.append(result.id)
+                n_created += 1
         except Exception as e:
             n_rejected += 1
             current_app.logger.error('Error processing record [{id}] : {e}'
@@ -322,7 +370,7 @@ def bulk_record(record):
     record_schema = current_jsonschemas.path_to_url('documents/document-v0.0.1.json')
     item_schema = current_jsonschemas.path_to_url('items/item-v0.0.1.json')
     holding_schema = current_jsonschemas.path_to_url('holdings/holding-v0.0.1.json')
-    host_url = current_app.config.get('RERO_ILS_APP_BASE_URL')
+    host_url = current_app.config.get('RERO_ILS_APP_URL')
     url_api = '{host}/api/{doc_type}/{pid}'
     required = ['pid', 'type', 'title', 'language']
     try:
@@ -330,7 +378,7 @@ def bulk_record(record):
             raise Exception('FRBR record cannot be processed')
 
         if record.isMasked:
-            raise Exception('masked record will be processed')
+            raise Exception('masked record will not be processed')
 
         document = record.document
         document['$schema'] = record_schema
@@ -342,48 +390,57 @@ def bulk_record(record):
                                         doc_type='documents',
                                         pid=document.get('pid'))
 
-        holdings_type = 'serial' if document.get('type') == 'journal' else 'standard'
-
+        document_type = document.get('type')
         map_holdings = {}
         holdings = []
         for idx, holding in enumerate(record.holdings):
-            holding['$schema'] = holding_schema
-            holding['holdings_type'] = holdings_type
-            holding['document'] = {
+            new_holding = {}
+            new_holding['$schema'] = holding_schema
+            new_holding['document'] = {
                 '$ref': uri_documents
                 }
-            holding['circulation_category'] = {
+            new_holding['circulation_category'] = {
                 '$ref': map_item_type(str(holding.get('circulation_category')))
                 }
-            holding['location'] = {
+            new_holding['location'] = {
                 '$ref': map_locations(str(holding.get('location')))
                 }
+            holding_map = '{location}#{cica}'.format(
+                location=holding.get('location'),
+                cica=holding.get('circulation_category'))
+
+            # holding without items must be serial
+            holdings_type = 'serial' \
+                if document_type == 'journal' \
+                and not has_items(holding_map, record.items) else 'standard'
+            new_holding['holdings_type'] = holdings_type
 
             map_holdings.update({
-                    '{location}#{cica}'.format(
-                        location = holding.get('location'),
-                        cica = holding.get('circulation_category')) : idx
+                    holding_map: idx
                 }
             )
-            holdings.append(holding)
+            holdings.append(new_holding)
 
         items = []
         for item in record.items:
-            item['$schema'] = item_schema
-            item['document'] = {
+            new_item = {}
+            new_item['$schema'] = item_schema
+            new_item['document'] = {
                 '$ref': uri_documents
                 }
-            item['item_type'] = {
+            new_item['item_type'] = {
                 '$ref': map_item_type(str(item.get('item_type')))
                 }
-            item['location'] = {
+            new_item['location'] = {
                 '$ref': map_locations(str(item.get('location')))
                 }
-
+            new_item['type'] = 'standard'
+            # item['type'] = 'standard' if holdings_type == 'standard' \
+            #     else 'issue'
             holding_pid = map_holdings.get(
                 '{location}#{cica}'.format(
-                    location = item.get('location'),
-                    cica = item.get('item_type')))
+                    location= item.get('location'),
+                    cica= item.get('item_type')))
             if holding_pid is None:
                 click.secho('holding pid is None for record : {id} '.format(
                     id=document.get('pid')
@@ -394,16 +451,16 @@ def bulk_record(record):
                     location = item.get('location'),
                     cica = item.get('item_type')), fg='yellow')
 
-            item['holding'] = {
+            new_item['holding'] = {
                 '$ref': url_api.format(host=host_url,
                             doc_type='holdings',
                             pid=holding_pid)
                 }
 
-            items.append(item)
+            items.append(new_item)
         return {
-            'document' : document,
-            'holdings' : holdings,
+            'document': document,
+            'holdings': holdings,
             'items': items
         }
     except Exception as e:
@@ -412,3 +469,12 @@ def bulk_record(record):
                 id=str(record.data.get('_id')).strip(),
                 e=str(e)))
         raise
+
+
+def has_items(holding, items):
+    """check if holding has items."""
+    # TODO: use filter
+    for item in items:
+        if holding == item.get('holding'):
+            return True
+    return False
