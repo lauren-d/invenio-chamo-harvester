@@ -78,6 +78,7 @@ setup(
         ],
         'flask.commands': [
             'chamo = invenio_chamo_harvester.cli:chamo',
+            'export = invenio_chamo_harvester.cli:export',
         ],
         'invenio_celery.tasks': [
             'invenio_chamo_harvester = invenio_chamo_harvester.tasks',

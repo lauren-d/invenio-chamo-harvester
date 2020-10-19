@@ -38,10 +38,11 @@ from flask import current_app
 
 from invenio_chamo_harvester.dojson.utils import CustomReroIlsMarc21Overdo
 from rero_ils.dojson.utils import \
-    TitlePartList, add_note, build_responsibility_data, error_print, \
+    TitlePartList, add_note, error_print, \
     extract_subtitle_and_parallel_titles_from_field_245_b, get_field_items, \
     get_field_link_data, make_year, not_repetitive, \
     remove_trailing_punctuation
+from ...utils import build_responsibility_data
 
 _ISSUANCE_MAIN_TYPE_PER_BIB_LEVEL = {
     'a': 'rdami:1001',

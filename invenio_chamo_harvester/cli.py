@@ -12,7 +12,9 @@ from __future__ import absolute_import, print_function
 
 import click
 import json
+import os
 import yaml
+import ciso8601
 from celery.messaging import establish_connection
 from flask import current_app
 from flask.cli import with_appcontext
@@ -22,11 +24,16 @@ from invenio_chamo_harvester.tasks import (process_bulk_queue,
                                            bulk_record)
 from invenio_chamo_harvester.utils import get_max_record_pid
 from invenio_jsonschemas import current_jsonschemas
-from invenio_pidstore.models import PersistentIdentifier, PIDStatus, RecordIdentifier
+from invenio_pidstore.models import PersistentIdentifier, PIDStatus,\
+    RecordIdentifier
+from invenio_records.api import Record
+from rero_ils.modules.cli import fixtures
+from rero_ils.modules.utils import get_record_class_from_schema_or_pid_type
 from rero_ils.modules.documents.api import Document
 from rero_ils.modules.documents.models import DocumentIdentifier
 from sqlalchemy import func
 from invenio_db import db
+
 
 def abort_if_false(ctx, param, value):
     """Abort command is value is False."""
@@ -36,8 +43,96 @@ def abort_if_false(ctx, param, value):
 
 @click.group()
 def chamo():
-    """Fixtures management commands."""
+    """Chamo harvester management commands."""
 
+
+@click.group()
+def export():
+    """Fixtures export management commands."""
+
+
+@export.command("records")
+@click.option('-t', '--pid-type', 'pid_type',
+              help='PID type of records to export.')
+@click.option('-d', '--directory', 'directory', default='export_data/',
+              help='Directory destination.')
+@click.option('-v', '--verbose', is_flag=True, default=False)
+@with_appcontext
+def records_export(pid_type, directory,  verbose):
+    """Export records."""
+    record_class = get_record_class_from_schema_or_pid_type(pid_type=pid_type)
+    if not record_class:
+        raise AttributeError('Invalid pid type.')
+
+    # prepare export directory
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    records = []
+    # get records from DB
+    for recid in record_class.get_all_pids():
+        if verbose:
+            click.secho('process recid: {recid}'.format(
+                recid=recid
+            ), fg='green')
+        records.append(record_class.get_record_by_pid(recid).dumps())
+
+    # prepare export file
+    filename = os.path.join(directory, '{name}.json'.format(
+        name=record_class.provider.pid_type))
+
+    with open(filename, 'w') as outfile:
+        json.dump(records, outfile, indent=4)
+
+    click.secho('{nb_records} records exported ({pid_type})'.format(
+        nb_records=len(records),
+        pid_type=pid_type
+    ), fg='green')
+
+
+# @export.command("records")
+# @click.option('-t', '--pid-type', 'pid_type',
+#               help='PID type of records to export.')
+# @click.option('-d', '--directory', 'directory', default='export_data/',
+#               help='Directory destination.')
+# @click.option('-v', '--verbose', is_flag=True, default=False)
+# @with_appcontext
+# def records_export(pid_type, directory,  verbose):
+#     """Export records."""
+#     if not pid_type:
+#         raise AttributeError('Invalid pid type.')
+#
+#     # prepare export directory
+#     if not os.path.exists(directory):
+#         os.makedirs(directory)
+#
+#     query = PersistentIdentifier.query.filter_by(
+#         pid_type=pid_type
+#     )
+#     if not with_deleted:
+#         query = query.filter_by(status=PIDStatus.REGISTERED)
+#
+#     records = []
+#     # get records from DB
+#     for identifier in query:
+#         if verbose:
+#             click.secho('process recid: {recid}'.format(
+#                 recid=recid
+#             ), fg='green')
+#         records.append(record_class.get_record_by_pid(identifier.pid_value)
+#                        .dumps())
+#
+#     # prepare export file
+#     filename = os.path.join(directory, '{name}.json'.format(
+#         name=record_class.provider.pid_type))
+#
+#     with open(filename, 'w') as outfile:
+#         json.dump(records, outfile, indent=4)
+#
+#     click.secho('{nb_records} records exported ({pid_type})'.format(
+#         nb_records=len(records),
+#         pid_type=pid_type
+#     ), fg='green')
 
 @chamo.command("harvest")
 @click.option('-s', '--size', type=int, default=1000)
@@ -111,7 +206,7 @@ def run(initial, delayed, concurrency):
 @with_appcontext
 def record(bibid):
     """Run transform to invenio record."""
-    if bibid>0:
+    if bibid > 0:
         try:
             print(json.dumps(
                 bulk_record(ChamoBibRecord.get_record_by_id(bibid))))
@@ -124,7 +219,7 @@ def record(bibid):
 @with_appcontext
 def document(bibid):
     """Run transform to invenio record."""
-    if bibid>0:
+    if bibid > 0:
         record_schema = current_jsonschemas.path_to_url(
             'documents/document-v0.0.1.json')
         record = ChamoBibRecord.get_record_by_id(bibid)
@@ -188,3 +283,168 @@ def delete_queue():
         click.secho('Indexing queue has been deleted.', fg='green')
         return queue
     return action
+
+
+@click.command('create_virtua_loans')
+@click.option('-v', '--verbose', 'verbose', is_flag=True, default=False)
+@click.option('-d', '--debug', 'debug', is_flag=True, default=False)
+@click.argument('infile', type=click.File('r'))
+@with_appcontext
+def create_virtua_loans(infile, verbose, debug):
+    """Create circulation transactions from Virtua.
+    infile: Json transactions file
+    """
+    click.secho('Create Virtua circulation transactions:', fg='green')
+    data = json.load(infile)
+    errors_count = {}
+    to_block = []
+    for patron_data in data.get('items'):
+        patron_barcode   = patron_data.get('patron_barcode')
+        item_barcode     = patron_data.get('item_barcode')
+        user_id          = patron_data.get('user_id')
+        location_id      = patron_data.get('location_id')
+
+        due_date         = ciso8601.parse_datetime(patron_data.get('due_date'))
+        checkout_date    = ciso8601.parse_datetime(patron_data.get('checkout_date'))
+        organisation_pid = patron_data.get('organisation_id')
+
+        if patron_barcode is None:
+            click.secho('Patron barcode is missing!', fg='red')
+        else:
+            click.echo('Patron: {barcode}'.format(barcode=patron_barcode))
+            requests = patron_data.get('requests', {})
+            blocked = patron_data.get('blocked', False)
+
+            create_virtua_loan(patron_barcode, item_barcode, user_id, \
+                    location_id, checkout_date, due_date, organisation_pid, verbose, debug)
+
+
+    for key, val in errors_count.items():
+        click.secho(
+            'Errors {transaction_type}: {count}'.format(
+                transaction_type=key,
+                count=val
+            ),
+            fg='red'
+        )
+    # click.echo(result)
+
+
+def create_virtua_loan(patron_barcode, item_barcode,
+                user_pid, user_location, transaction_date, due_date,
+                organisation_pid, verbose=False,
+                debug=False):
+    """Create loans transactions."""
+    try:
+        item = Item.get_item_by_barcode(barcode=item_barcode,organisation_pid=organisation_pid)
+        patron = Patron.get_patron_by_barcode(barcode=patron_barcode)
+
+        click.secho("Create loan...")
+        item.checkout(
+            patron_pid=patron.pid,
+            transaction_user_pid=user_pid,
+            transaction_location_pid=user_location,
+            transaction_date=transaction_date,
+            document_pid=item.replace_refs()['document']['pid'],
+            item_pid=item.pid,
+        )
+        click.secho("Update due date")
+
+        loan = get_loan_for_item(item_pid_to_object(item.pid))
+        loan_pid = loan.get('pid')
+        loan = Loan.get_record_by_pid(loan_pid)
+        loan['end_date'] = due_date.isoformat()
+        loan.update(
+            loan,
+            dbcommit=True,
+            reindex=True
+        )
+    except Exception as err:
+        if verbose:
+            click.secho(
+                '\tException loan {err}'.format(
+                        err=err
+                ),
+                fg='red'
+            )
+        if debug:
+            traceback.print_exc()
+        return None
+
+
+@click.command('create_virtua_requests')
+@click.option('-v', '--verbose', 'verbose', is_flag=True, default=False)
+@click.option('-d', '--debug', 'debug', is_flag=True, default=False)
+@click.argument('infile', type=click.File('r'))
+@with_appcontext
+def create_virtua_requests(infile, verbose, debug):
+    """Create requests from Virtua.
+    infile: Json transactions file
+    """
+    click.secho('Create Virtua requests:', fg='green')
+    data = json.load(infile)
+    errors_count = {}
+    to_block = []
+    for patron_data in data.get('items'):
+        patron_barcode   = patron_data.get('patron_barcode')
+        item_barcode     = patron_data.get('item_barcode')
+        location_id      = patron_data.get('location_id')
+        date_placed      = ciso8601.parse_datetime(patron_data.get('date_placed'))
+        organisation_pid = patron_data.get('organisation_id')
+
+        if patron_barcode is None:
+            click.secho('Patron barcode is missing!', fg='red')
+        else:
+            click.echo('Patron: {barcode}'.format(barcode=patron_barcode))
+            create_virtua_request(patron_barcode, item_barcode, \
+                    location_id, date_placed, location_id,
+                    organisation_pid, verbose, debug)
+
+    for key, val in errors_count.items():
+        click.secho(
+            'Errors {transaction_type}: {count}'.format(
+                transaction_type=key,
+                count=val
+            ),
+            fg='red'
+        )
+
+
+def create_virtua_request(patron_barcode, item_barcode,
+                user_location, transaction_date, pickup_location_pid,
+                organisation_pid, verbose=False,
+                debug=False):
+    """Create Virtua request transactions."""
+    try:
+        item = Item.get_item_by_barcode(barcode=item_barcode,organisation_pid=organisation_pid)
+        patron = Patron.get_patron_by_barcode(patron_barcode)
+
+        circ_policy = CircPolicy.provide_circ_policy(
+            item.holding_library_pid,
+            patron.patron_type_pid,
+            item.holding_circulation_category_pid
+        )
+        if circ_policy.get('allow_requests'):
+            item.request(
+                patron_pid=patron.pid,
+                transaction_location_pid=user_location,
+                transaction_user_pid=patron.pid,
+                transaction_date=transaction_date,
+                pickup_location_pid=pickup_location_pid,
+                document_pid=item.replace_refs()['document']['pid'],
+            )
+    except Exception as err:
+        if verbose:
+            click.secho(
+                '\tException request : {err}'.format(
+                    err=err
+                ),
+                fg='red'
+            )
+        if debug:
+            traceback.print_exc()
+        return None
+
+
+fixtures.add_command(create_virtua_loans)
+fixtures.add_command(create_virtua_requests)

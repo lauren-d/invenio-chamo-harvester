@@ -12,6 +12,7 @@
 from __future__ import absolute_import, print_function
 
 import time
+import traceback
 from datetime import datetime
 import sys
 
@@ -146,38 +147,36 @@ def bulk_records(records, bulk_kwargs=None):
                 raise Exception('missing required {f} properties for record'
                                 .format(f=required))
 
-            print('DOCUMENT:', document)
-
             # TODO: create task to update records
             if not initial_import:
                 # check if already in Rero-ILS
                 rec = Document.get_record_by_pid(document.get('pid'))
 
-            if rec:
-                # UPDATE DOCUMENT
-                doc_pid = rec.get('pid')
-                for ite_obj in Item.get_items_pid_by_document_pid(doc_pid):
-                    try:
-                        item_pid = ite_obj.get('value')
-                        item = Item.get_record_by_pid(item_pid)
-                        if item:
-                            item.delete(force=True, dbcommit=True, delindex=True)
-                        else :
-                            # TODO: delete by id
-                            pass
-                    except Exception as e:
-                        print('ERROR deleting item:', e)
-                        pass
+                if rec:
+                    # UPDATE DOCUMENT
+                    # doc_pid = rec.get('pid')
+                    # for ite_obj in Item.get_items_pid_by_document_pid(doc_pid):
+                    #     try:
+                    #         item_pid = ite_obj.get('value')
+                    #         item = Item.get_record_by_pid(item_pid)
+                    #         if item:
+                    #             item.delete(force=True, dbcommit=True, delindex=True)
+                    #         else :
+                    #             # TODO: delete by id
+                    #             pass
+                    #     except Exception as e:
+                    #         print('ERROR deleting item:', e)
+                    #         pass
 
-                # update document
-                document['$schema'] = record_schema
-                current_app.logger.info('update document')
-                document = rec.replace(
-                    document,
-                    dbcommit=False,
-                    reindex=False
-                )
-                record_id_iterator.append(document.id)
+                    # update document
+                    document['$schema'] = record_schema
+                    current_app.logger.info('update document')
+                    document = rec.replace(
+                        document,
+                        dbcommit=False,
+                        reindex=False
+                    )
+                    record_id_iterator.append(document.id)
             else:
                 # NEW DOCUMENT
                 document['$schema'] = record_schema
@@ -213,14 +212,9 @@ def bulk_records(records, bulk_kwargs=None):
                         '$ref': map_locations(str(holding.get('location')))
                         }
                     holding_map = '{location}#{cica}'.format(
-                                location = holding.get('location'),
-                                cica = holding.get('circulation_category'))
+                                location=holding.get('location'),
+                                cica=holding.get('circulation_category'))
 
-                    # holding without items must be serial
-                    holdings_type = 'serial'\
-                        if document_type == 'journal'\
-                        and not has_items(holding_map, items) else 'standard'
-                    new_holding['holdings_type'] = holdings_type
                     result = Holding.create(
                         new_holding,
                         dbcommit=False,
@@ -246,13 +240,11 @@ def bulk_records(records, bulk_kwargs=None):
                     new_item['location'] = {
                         '$ref': map_locations(str(item.get('location')))
                         }
-                    new_item['type'] = 'standard'
-                    # item['type'] = 'standard' if holdings_type == 'standard' \
-                    #     else 'issue'
+
                     holding_pid = map_holdings.get(
                         '{location}#{cica}'.format(
-                            location = item.get('location'),
-                            cica = item.get('item_type')))
+                            location=item.get('location'),
+                            cica=item.get('item_type')))
                     if holding_pid is None:
                         click.secho('holding pid is None for record : {id} '.format(
                             id=document.pid
@@ -260,8 +252,8 @@ def bulk_records(records, bulk_kwargs=None):
                         click.secho('holding map : {map}.'.format(
                             map=map_holdings), fg='white')
                         click.secho('item to map : {location}#{cica}'.format(
-                            location = item.get('location'),
-                            cica = item.get('item_type')), fg='yellow')
+                            location=item.get('location'),
+                            cica=item.get('item_type')), fg='yellow')
                     new_item['holding'] = {
                         '$ref': url_api.format(
                             host=host_url,
@@ -273,14 +265,19 @@ def bulk_records(records, bulk_kwargs=None):
                         dbcommit=False,
                         reindex=False
                     )
+                    db.session.add(
+                        ItemIdentifier(recid=result.get('pid')))
                     item_id_iterator.append(result.id)
                 n_created += 1
         except Exception as e:
             n_rejected += 1
-            current_app.logger.error('Error processing record [{id}] : {e}'
-                        .format(
-                            id=str(record.get('_id')).strip(),
-                            e=str(e)))
+            traceback.print_exc()
+            current_app.logger.error(
+                'Error processing record [{id}] : {e}'.format(
+                    id=str(record.get('_id')).strip(),
+                    e=str(e)
+                ), exc_info=True
+            )
         db.session.flush()
         if n_created % bulk_size == 0:
             execution_time = datetime.now() - start_time
@@ -354,13 +351,15 @@ def bulk_records(records, bulk_kwargs=None):
 
     max_recid = get_max_record_pid('doc')
     DocumentIdentifier._set_sequence(max_recid)
+    max_recid = get_max_record_pid('item')
+    ItemIdentifier._set_sequence(max_recid)
     db.session.commit()
-    indexer.bulk_index(holding_id_iterator, doc_type='hold')
-    indexer.process_bulk_queue()
-    indexer.bulk_index(item_id_iterator, doc_type='item')
-    indexer.process_bulk_queue()
-    indexer.bulk_index(record_id_iterator, doc_type='doc')
-    indexer.process_bulk_queue()
+    # indexer.bulk_index(holding_id_iterator, doc_type='hold')
+    # indexer.process_bulk_queue()
+    # indexer.bulk_index(item_id_iterator, doc_type='item')
+    # indexer.process_bulk_queue()
+    # indexer.bulk_index(record_id_iterator, doc_type='doc')
+    # indexer.process_bulk_queue()
     return n_created
 
 
