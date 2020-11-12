@@ -117,6 +117,7 @@ def bulk_records(records, bulk_kwargs=None):
     """Records bulk creation."""
     bulk_size = current_app.config['CHAMO_HARVESTER_BULK_SIZE']
     initial_import = bulk_kwargs.pop('initial_load')
+    bulk_index = bulk_kwargs.pop('bulk_index')
     current_app.logger.info('harverster bulk size : {size}'.format(
         size=bulk_size))
     n_updated = 0
@@ -278,74 +279,34 @@ def bulk_records(records, bulk_kwargs=None):
                     e=str(e)
                 ), exc_info=True
             )
-        db.session.flush()
+        # db.session.flush()
         if n_created % bulk_size == 0:
-            execution_time = datetime.now() - start_time
-            click.secho('{nb} created records in {execution_time}.'
-                        .format(nb=len(record_id_iterator),
-                                execution_time=execution_time),
-                        fg='white')
-            start_time = datetime.now()
-
             db.session.commit()
-
-            execution_time = datetime.now() - start_time
-
-            current_app.logger.info(
-                '{nb} commited records in {execution_time}.'
-                .format(nb=len(record_id_iterator),
-                        execution_time=execution_time))
-
-            click.secho('{nb} commited records in {execution_time}.'
-                        .format(nb=len(record_id_iterator),
-                                execution_time=execution_time),
-                        fg='white')
-            start_time = datetime.now()
-            click.secho('sending {n} holdings to indexer queue.'
-                        .format(n=len(holding_id_iterator)), fg='white')
-            indexer.bulk_index(holding_id_iterator, doc_type='hold')
-            click.secho('process queue...', fg='yellow')
-
-            indexer.process_bulk_queue()
-
-            click.secho('sending {n} items to indexer queue.'
-                        .format(n=len(item_id_iterator)), fg='white')
-            indexer.bulk_index(item_id_iterator, doc_type='item')
-            click.secho('process queue...', fg='yellow')
-
-            indexer.process_bulk_queue()
-
-            click.secho('sending {n} documents to indexer queue.'
-                        .format(n=len(record_id_iterator)), fg='white')
-            indexer.bulk_index(record_id_iterator, doc_type='doc')
-            click.secho('process queue...', fg='yellow')
-
-            indexer.process_bulk_queue()
-
-            execution_time = datetime.now() - start_time
-            click.secho('indexing records process in {execution_time}.'
-                        .format(execution_time=execution_time),
-                        fg='white')
-            click.secho('processing next batch records.', fg='green')
+            if bulk_index:
+                # HOLDINGS
+                indexer.bulk_index(holding_id_iterator, doc_type='hold')
+                indexer.process_bulk_queue()
+                # ITEMS
+                indexer.bulk_index(item_id_iterator, doc_type='item')
+                indexer.process_bulk_queue()
+                # DOCUMENTS
+                indexer.bulk_index(record_id_iterator, doc_type='doc')
+                indexer.process_bulk_queue()
 
             record_id_iterator.clear()
             holding_id_iterator.clear()
             item_id_iterator.clear()
-            start_time = datetime.now()
-    try:
-        start_time = datetime.now()
-        db.session.commit()
-        execution_time = datetime.now() - start_time
-        current_app.logger.info('{nb} commited records in {execution_time}.'
-                                .format(nb=len(record_id_iterator),
-                                        execution_time=execution_time))
 
-        indexer.bulk_index(holding_id_iterator, doc_type='hold')
-        indexer.process_bulk_queue()
-        indexer.bulk_index(item_id_iterator, doc_type='item')
-        indexer.process_bulk_queue()
-        indexer.bulk_index(record_id_iterator, doc_type='doc')
-        indexer.process_bulk_queue()
+    try:
+        db.session.commit()
+
+        if bulk_index:
+            indexer.bulk_index(holding_id_iterator, doc_type='hold')
+            indexer.process_bulk_queue()
+            indexer.bulk_index(item_id_iterator, doc_type='item')
+            indexer.process_bulk_queue()
+            indexer.bulk_index(record_id_iterator, doc_type='doc')
+            indexer.process_bulk_queue()
     except Exception as e:
         current_app.logger.error(e)
 
@@ -354,12 +315,6 @@ def bulk_records(records, bulk_kwargs=None):
     max_recid = get_max_record_pid('item')
     ItemIdentifier._set_sequence(max_recid)
     db.session.commit()
-    # indexer.bulk_index(holding_id_iterator, doc_type='hold')
-    # indexer.process_bulk_queue()
-    # indexer.bulk_index(item_id_iterator, doc_type='item')
-    # indexer.process_bulk_queue()
-    # indexer.bulk_index(record_id_iterator, doc_type='doc')
-    # indexer.process_bulk_queue()
     return n_created
 
 

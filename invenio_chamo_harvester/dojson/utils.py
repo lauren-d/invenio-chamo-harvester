@@ -8,7 +8,7 @@ from rero_ils.dojson.utils import ReroIlsMarc21Overdo, \
     TitlePartList, add_note, build_responsibility_data, error_print, \
     extract_subtitle_and_parallel_titles_from_field_245_b, get_field_items, \
     get_field_link_data, make_year, not_repetitive, \
-    remove_trailing_punctuation
+    remove_trailing_punctuation, join_alternate_graphic_data
 
 
 class CustomReroIlsMarc21Overdo(ReroIlsMarc21Overdo):

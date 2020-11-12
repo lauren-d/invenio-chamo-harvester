@@ -181,13 +181,18 @@ def harvest_chamo(size, next_id, modified_since, verbose, file):
               help='Run harvesting in background.')
 @click.option('--concurrency', '-c', default=1, type=int,
               help='Number of concurrent harvesting tasks to start.')
+@click.option('--bulk-index', '-b', is_flag=True,
+              help='Do bulk index.')
 @with_appcontext
-def run(initial, delayed, concurrency):
+def run(initial, delayed, concurrency, bulk_index):
     """Run bulk record harvesting."""
     if delayed:
         celery_kwargs = {
             'kwargs': {
-                'bulk_kwargs': {'initial_load': initial}
+                'bulk_kwargs': {
+                    'initial_load': initial,
+                    'bulk_index': bulk_index
+                }
             }
         }
         click.secho(
@@ -198,7 +203,12 @@ def run(initial, delayed, concurrency):
     else:
         click.secho('Retrieve queued records...', fg='green')
         ChamoRecordHarvester().process_bulk_queue(
-            bulk_kwargs={'initial_load': initial})
+            bulk_kwargs={
+                'initial_load': initial,
+                'bulk_index': bulk_index
+            }
+        )
+
 
 @chamo.command("record")
 @click.option('--bibid', '-i', default=0, type=int,
