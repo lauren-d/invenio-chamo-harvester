@@ -198,19 +198,19 @@ def bulk_records(records, bulk_kwargs=None):
                 map_holdings = {}
                 items = record.get('items', [])
                 for holding in record.get('holdings'):
-                    new_holding = {}
                     new_holding = deepcopy(holding)
                     new_holding['$schema'] = holding_schema
 
                     new_holding['document'] = {
                         '$ref': uri_documents
-                        }
+                    }
                     new_holding['circulation_category'] = {
-                        '$ref': map_item_type(str(holding.get('circulation_category')))
-                        }
+                        '$ref': map_item_type(
+                            str(holding.get('circulation_category')))
+                    }
                     new_holding['location'] = {
                         '$ref': map_locations(str(holding.get('location')))
-                        }
+                    }
                     holding_map = '{location}#{cica}'.format(
                                 location=holding.get('location'),
                                 cica=holding.get('circulation_category'))
@@ -448,7 +448,7 @@ def bulk_record(record):
                     map=map_holdings), fg='white')
                 click.secho('item to map : {location}#{cica}'.format(
                     location = item.get('location'),
-                    cica = item.get('item_type')), fg='yellow')
+                    cica=item.get('item_type')), fg='yellow')
 
             new_item['holding'] = {
                 '$ref': url_api.format(host=host_url,
