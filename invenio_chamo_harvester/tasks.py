@@ -138,10 +138,12 @@ def bulk_records(records, bulk_kwargs=None):
     for record in records:
         try:
             if record.get('frbr'):
-                raise Exception('FRBR record cannot be processed')
+                continue
+                # raise Exception('FRBR record cannot be processed')
             # TODO: check chamo:2033646 => record is masked
             if record.get('masked'):
-                raise Exception('masked record will be not processed')
+                continue
+                # raise Exception('masked record will be not processed')
             document = record.get('document', {})
             if not all(elem in document.keys() for elem in required):
                 raise Exception('missing required {f} properties for record'
@@ -191,8 +193,6 @@ def bulk_records(records, bulk_kwargs=None):
                 uri_documents = url_api.format(host=host_url,
                                             doc_type='documents',
                                             pid=document.get('pid'))
-
-                document_type = document.get('type')
 
                 # HOLDINGS
                 map_holdings = {}

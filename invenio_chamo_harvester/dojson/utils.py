@@ -224,6 +224,7 @@ class CustomReroIlsMarc21Overdo(ReroIlsMarc21Overdo):
                 series_statement.append(series)
                 data['seriesStatement'] = series_statement
 
+
 def build_responsibility_data(responsibility_data):
     """Build the responsibility data form subfield $c of field 245.
 
@@ -264,3 +265,8 @@ def build_responsibility_data(responsibility_data):
         index += 1
         responsibilities.append(out_data)
     return responsibilities
+
+
+def clean_string_terminator(value):
+    """Clean \u009c character in string."""
+    return value.replace('\u009c', '')

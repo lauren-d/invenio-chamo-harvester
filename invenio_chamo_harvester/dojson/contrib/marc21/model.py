@@ -42,7 +42,7 @@ from rero_ils.dojson.utils import \
     extract_subtitle_and_parallel_titles_from_field_245_b, get_field_items, \
     get_field_link_data, make_year, not_repetitive, \
     remove_trailing_punctuation
-from ...utils import build_responsibility_data
+from ...utils import build_responsibility_data, clean_string_terminator
 
 _ISSUANCE_MAIN_TYPE_PER_BIB_LEVEL = {
     'a': 'rdami:1001',
@@ -311,7 +311,7 @@ def marc21_to_title(self, key, value):
     if fields_246:
         subfields_246_a = marc21.get_subfields(fields_246[0], 'a')
         if subfields_246_a:
-            subfield_246_a = subfields_246_a[0]
+            subfield_246_a = clean_string_terminator(subfields_246_a[0])
 
     tag_link, link = get_field_link_data(value)
     items = get_field_items(value)
@@ -332,6 +332,7 @@ def marc21_to_title(self, key, value):
     subfield_selection = {'a', 'b', 'c', 'n', 'p'}
     for blob_key, blob_value in items:
         if blob_key in subfield_selection:
+            blob_value = clean_string_terminator(blob_value)
             value_data = marc21.build_value_with_alternate_graphic(
                 '245', blob_key, blob_value, index, link, ',.', ':;/-=')
             if blob_key in {'a', 'b', 'c'}:
@@ -389,7 +390,7 @@ def marc21_to_titlesProper(self, key, value):
     for k, v in value.items():
         if k in ['a', 'p', 'g', 's', 't']:
             titleParts.append(' '.join(utils.force_list(v)))
-    return ' '.join(titleParts) or None
+    return clean_string_terminator(' '.join(titleParts)) or None
 
 
 @marc21.over('contribution', '[17][01][01]..')
@@ -473,10 +474,14 @@ def marc21_to_contribution(self, key, value):
                 if value.get('n'):
                     conference_number = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'n')
-                    agent[
-                        'conference_number'] = remove_trailing_punctuation(
-                        conference_number
-                    ).lstrip('(').rstrip(')')
+
+                    data = remove_trailing_punctuation(
+                        conference_number).lstrip('(').rstrip(')')
+                    if len(data) > 0:
+                        agent['conference_number'] = data
+                    # agent[
+                    #     'conference_number'] = remove_trailing_punctuation(
+                    #     conference_number).lstrip('(').rstrip(')')
                 if value.get('d'):
                     conference_date = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'd')
@@ -629,9 +634,9 @@ def marc21_to_provisionActivity(self, key, value):
 
     def build_place():
         place = {}
-        if re.match(r'\[\s?(s|S)\.(d|D|n|N|l|e)\.?\]', marc21.country): 
-            return place
         if marc21.country:
+            if re.match(r'\[\s?(s|S)\.(d|D|n|N|l|e)\.?\]', marc21.country):
+                return place
             place['country'] = marc21.country
         if place:
             place['type'] = 'bf:Place'
@@ -1246,13 +1251,16 @@ def marc21_to_part_of(self, key, value):
     numbering_list = []
     subfield_w = not_repetitive(
         marc21.bib_id, marc21.bib_id, key, value, 'w', default='').strip()
-    if subfield_w:
-        match = re.compile(r'^REROILS:')
-        pid = match.sub('', subfield_w)
-        part_of['document'] = {
-            '$ref':
-                'https://ils.rero.ch/api/documents/{pid}'.format(pid=pid)
-        }
+    if subfield_w and 'NL-LeOCL' not in subfield_w:
+        match = re.compile(r'^\(BE-LnBOR\)')
+        pid = match.sub('', subfield_w).lstrip('0')
+        if pid:
+            host = current_app.config.get('RERO_ILS_APP_URL')
+            part_of['document'] = {
+                '$ref':
+                    '{host}/api/documents/{pid}'.format(
+                        host=host, pid=pid)
+            }
         if key[:3] == '773':
             subfields_g = utils.force_list(value.get('g'))
             discard_numbering = False
