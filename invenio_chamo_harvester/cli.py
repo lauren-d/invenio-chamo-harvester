@@ -18,6 +18,7 @@ import ciso8601
 from celery.messaging import establish_connection
 from flask import current_app
 from flask.cli import with_appcontext
+from invenio_circulation.api import get_loan_for_item
 from invenio_chamo_harvester.api import ChamoRecordHarvester, ChamoBibRecord
 from invenio_chamo_harvester.tasks import (process_bulk_queue,
                                            queue_records_to_harvest,
@@ -30,6 +31,11 @@ from invenio_records.api import Record
 from rero_ils.modules.cli import fixtures
 from rero_ils.modules.utils import get_record_class_from_schema_or_pid_type
 from rero_ils.modules.documents.api import Document
+from rero_ils.modules.patrons.api import Patron
+from rero_ils.modules.items.api import Item
+from rero_ils.modules.items.utils import item_pid_to_object
+from rero_ils.modules.loans.api import Loan
+from rero_ils.modules.circ_policies.api import CircPolicy
 from rero_ils.modules.documents.models import DocumentIdentifier
 from sqlalchemy import func
 from invenio_db import db
@@ -75,7 +81,17 @@ def records_export(pid_type, directory,  verbose):
             click.secho('process recid: {recid}'.format(
                 recid=recid
             ), fg='green')
-        records.append(record_class.get_record_by_pid(recid).dumps())
+        try:
+            records.append(record_class.get_record_by_pid(recid).dumps())
+        except Exception as e:
+            if verbose:
+                current_app.logger.error(
+                    'Error exporting record [{id}] : {e}'.format(
+                        id=str(recid).strip(),
+                        e=str(e)
+                    ), exc_info=True
+                )
+            pass
 
     # prepare export file
     filename = os.path.join(directory, '{name}.json'.format(
@@ -181,13 +197,18 @@ def harvest_chamo(size, next_id, modified_since, verbose, file):
               help='Run harvesting in background.')
 @click.option('--concurrency', '-c', default=1, type=int,
               help='Number of concurrent harvesting tasks to start.')
+@click.option('--bulk-index', '-b', is_flag=True,
+              help='Do bulk index.')
 @with_appcontext
-def run(initial, delayed, concurrency):
+def run(initial, delayed, concurrency, bulk_index):
     """Run bulk record harvesting."""
     if delayed:
         celery_kwargs = {
             'kwargs': {
-                'bulk_kwargs': {'initial_load': initial}
+                'bulk_kwargs': {
+                    'initial_load': initial,
+                    'bulk_index': bulk_index
+                }
             }
         }
         click.secho(
@@ -198,7 +219,12 @@ def run(initial, delayed, concurrency):
     else:
         click.secho('Retrieve queued records...', fg='green')
         ChamoRecordHarvester().process_bulk_queue(
-            bulk_kwargs={'initial_load': initial})
+            bulk_kwargs={
+                'initial_load': initial,
+                'bulk_index': bulk_index
+            }
+        )
+
 
 @chamo.command("record")
 @click.option('--bibid', '-i', default=0, type=int,
@@ -315,9 +341,9 @@ def create_virtua_loans(infile, verbose, debug):
             requests = patron_data.get('requests', {})
             blocked = patron_data.get('blocked', False)
 
-            create_virtua_loan(patron_barcode, item_barcode, user_id, \
-                    location_id, checkout_date, due_date, organisation_pid, verbose, debug)
-
+            create_virtua_loan(patron_barcode, item_barcode, user_id,
+                               location_id, checkout_date, due_date,
+                               organisation_pid, verbose, debug)
 
     for key, val in errors_count.items():
         click.secho(
@@ -336,7 +362,8 @@ def create_virtua_loan(patron_barcode, item_barcode,
                 debug=False):
     """Create loans transactions."""
     try:
-        item = Item.get_item_by_barcode(barcode=item_barcode,organisation_pid=organisation_pid)
+        item = Item.get_item_by_barcode(barcode=item_barcode,
+                                        organisation_pid=organisation_pid)
         patron = Patron.get_patron_by_barcode(barcode=patron_barcode)
 
         click.secho("Create loan...")
@@ -396,9 +423,9 @@ def create_virtua_requests(infile, verbose, debug):
             click.secho('Patron barcode is missing!', fg='red')
         else:
             click.echo('Patron: {barcode}'.format(barcode=patron_barcode))
-            create_virtua_request(patron_barcode, item_barcode, \
-                    location_id, date_placed, location_id,
-                    organisation_pid, verbose, debug)
+            create_virtua_request(patron_barcode, item_barcode, location_id,
+                                  date_placed, location_id, organisation_pid,
+                                  verbose, debug)
 
     for key, val in errors_count.items():
         click.secho(
@@ -411,12 +438,12 @@ def create_virtua_requests(infile, verbose, debug):
 
 
 def create_virtua_request(patron_barcode, item_barcode,
-                user_location, transaction_date, pickup_location_pid,
-                organisation_pid, verbose=False,
-                debug=False):
+                          user_location, transaction_date, pickup_location_pid,
+                          organisation_pid, verbose=False, debug=False):
     """Create Virtua request transactions."""
     try:
-        item = Item.get_item_by_barcode(barcode=item_barcode,organisation_pid=organisation_pid)
+        item = Item.get_item_by_barcode(barcode=item_barcode,
+                                        organisation_pid=organisation_pid)
         patron = Patron.get_patron_by_barcode(patron_barcode)
 
         circ_policy = CircPolicy.provide_circ_policy(

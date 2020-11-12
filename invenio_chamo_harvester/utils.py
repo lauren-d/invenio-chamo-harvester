@@ -124,6 +124,7 @@ def map_locations(location):
         "1020000": "{host}/api/locations/43",
         "600020": "{host}/api/locations/44",  # BST-INGI
         "1040000": "{host}/api/locations/45",
+        "1050000": "{host}/api/locations/46",
         "1050001": "{host}/api/locations/46",
         "1050002": "{host}/api/locations/47",
         "1050003": "{host}/api/locations/48",

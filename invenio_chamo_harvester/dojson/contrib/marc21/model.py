@@ -32,6 +32,7 @@ from datetime import datetime
 import click
 import requests
 from dojson import utils
+from dojson.utils import GroupableOrderedDict
 from isbnlib import EAN13, clean, to_isbn13
 
 from flask import current_app
@@ -43,6 +44,7 @@ from rero_ils.dojson.utils import \
     get_field_link_data, make_year, not_repetitive, \
     remove_trailing_punctuation
 from ...utils import build_responsibility_data, clean_string_terminator
+
 
 _ISSUANCE_MAIN_TYPE_PER_BIB_LEVEL = {
     'a': 'rdami:1001',
@@ -597,7 +599,8 @@ def marc21_to_provisionActivity(self, key, value):
             }
             label = remove_trailing_punctuation(label)
             if not label or re.match(r'\[\s?(s|S)\.(d|D|n|N|l|e)\.?\]', label):
-                label = default_per_code[code]
+                return None
+                # label = default_per_code[code]
 
             agent_data = {
                 'type': type_per_code[code],
@@ -1264,39 +1267,41 @@ def marc21_to_part_of(self, key, value):
         if key[:3] == '773':
             subfields_g = utils.force_list(value.get('g'))
             discard_numbering = False
-            for subfield_g in subfields_g:
-                numbering = Numbering()
-                values = subfield_g.strip().split('/')
-                numbering.add_numbering_value('year', values[0])
-                if len(values) == 1 and not numbering.has_year():
-                    numbering.add_numbering_value('pages', values[0])
-                elif len(values) == 2:
-                    if numbering.has_year():
-                        numbering.add_numbering_value('pages', values[1])
-                    else:
-                        numbering.add_numbering_value('volume', values[0])
+            if subfields_g and len(subfields_g) > 0:
+                for subfield_g in subfields_g:
+                    numbering = Numbering()
+                    values = subfield_g.strip().split('/')
+                    numbering.add_numbering_value('year', values[0])
+                    if len(values) == 1 and not numbering.has_year():
+                        numbering.add_numbering_value('pages', values[0])
+                    elif len(values) == 2:
+                        if numbering.has_year():
+                            numbering.add_numbering_value('pages', values[1])
+                        else:
+                            numbering.add_numbering_value('volume', values[0])
+                            numbering.add_numbering_value('issue', values[1])
+                    elif len(values) == 3:
+                        if not numbering.has_year():
+                            numbering.add_numbering_value('volume', values[0])
                         numbering.add_numbering_value('issue', values[1])
-                elif len(values) == 3:
-                    if not numbering.has_year():
-                        numbering.add_numbering_value('volume', values[0])
-                    numbering.add_numbering_value('issue', values[1])
-                    numbering.add_numbering_value('pages', values[2])
-                elif len(values) == 4:
-                    if numbering.has_year():
-                        numbering.add_numbering_value('volume', values[1])
-                        numbering.add_numbering_value('issue', values[2])
-                        numbering.add_numbering_value('pages', values[3])
-                    else:
-                        discard_numbering = True
-                if not discard_numbering and numbering.is_valid():
-                    numbering_list.append(numbering.get())
+                        numbering.add_numbering_value('pages', values[2])
+                    elif len(values) == 4:
+                        if numbering.has_year():
+                            numbering.add_numbering_value('volume', values[1])
+                            numbering.add_numbering_value('issue', values[2])
+                            numbering.add_numbering_value('pages', values[3])
+                        else:
+                            discard_numbering = True
+                    if not discard_numbering and numbering.is_valid():
+                        numbering_list.append(numbering.get())
         else:  # 800, 830
             subfields_v = utils.force_list(value.get('v', []))
-            for subfield_v in subfields_v:
-                numbering = Numbering()
-                numbering.add_numbering_value('volume', subfield_v)
-                if numbering.is_valid():
-                    numbering_list.append(numbering.get())
+            if subfields_v and len(subfields_v) > 0:
+                for subfield_v in subfields_v:
+                    numbering = Numbering()
+                    numbering.add_numbering_value('volume', subfield_v)
+                    if numbering.is_valid():
+                        numbering_list.append(numbering.get())
         if 'document' in part_of:
             if numbering_list:
                 part_of['numbering'] = numbering_list
