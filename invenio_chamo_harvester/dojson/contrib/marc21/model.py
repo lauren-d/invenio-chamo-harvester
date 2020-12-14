@@ -25,6 +25,7 @@
 
 """rero-ils MARC21 model definition."""
 
+import os
 import re
 import sys
 from datetime import datetime
@@ -110,6 +111,42 @@ def remove_punctuation(data, with_dot=False):
     except Exception:
         pass
     return data
+
+
+def get_contribution_link(bibid, viaf_id, key, value):
+    """Get MEF contribution link."""
+    # https://mef.test.rero.ch/api/mef/?q=rero.rero_pid:A012327677
+    prod_host = 'mef.rero.ch'
+    test_host = current_app.config.get('RERO_ILS_MEF_HOST', 'mef.rero.ch')
+    mef_url = 'https://{host}/api/'.format(host=test_host)
+
+    if key[:3] in ['100', '600', '610', '611', '700', '710', '711']:
+        # contribution
+        url = "{mef}mef/?q=viaf_pid:{viaf_pid}&size=1".format(
+            mef=mef_url, viaf_pid=viaf_id)
+        try:
+            request = requests.get(url=url)
+        except requests.exceptions.RequestException as err:
+            error_print('ERROR MEF ACCESS:', bibid, viaf_id, url, err)
+            return None
+        if request.status_code == requests.codes.ok:
+            data = request.json()
+            hits = data.get('hits', {}).get('hits')
+            if hits:
+                idref = hits[0].get('metadata', {}).get('idref', {}).get('pid')
+                if idref:
+                    url = "{mef}idref/{pid}".format(mef=mef_url, pid=idref)
+                    return url.replace(test_host, prod_host)
+        else:
+            subfields = []
+            for v, k in value.items():
+                if v != '__order__':
+                    subfields.append('${v} {k}'.format(v=v, k=k))
+            subfields = ' '.join(subfields)
+            field = '{key} {subfiels}'.format(key=key, subfiels=subfields)
+            error_print('WARNING MEF CONTRIBUTION IDREF NOT FOUND:',
+                        bibid, reroid, field, url,
+                        request.status_code)
 
 
 def get_person_link(bibid, id, key, value):
@@ -403,13 +440,16 @@ def marc21_to_contribution(self, key, value):
     if not key[4] == '2' and key[:3] in ['100', '700', '710', '711']:
         agent = {}
         if value.get('0'):
-            ref = get_person_link(marc21.bib_id, value.get('0'), key, value)
+            ref = get_contribution_link(marc21.bib_id, value.get('0'), key, value)
             if ref:
                 agent['$ref'] = ref
+                if key[:3] in ['100', '700']:
+                    agent['type'] = 'bf:Person'
+                elif key[:3] in ['710', '711']:
+                    agent['type'] = 'bf:Organisation'
         # we do not have a $ref
-        if not agent.get('$ref'):
+        if not agent.get('$ref') and value.get('a'):
             agent = {'type': 'bf:Person'}
-            agent['preferred_name'] = ''
             if value.get('a'):
                 name = not_repetitive(
                     marc21.bib_id, marc21.bib_id, key, value, 'a')
@@ -417,6 +457,7 @@ def marc21_to_contribution(self, key, value):
 
             # 100|700 Person
             if key[:3] in ['100', '700']:
+                agent['type'] = 'bf:Person'
                 if value.get('b'):
                     numeration = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'b')
@@ -474,16 +515,13 @@ def marc21_to_contribution(self, key, value):
                             subordinate_unit.rstrip('.'))
                     agent['subordinate_unit'] = subordinate_units
                 if value.get('n'):
-                    conference_number = not_repetitive(
+                    numbering = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'n')
 
-                    data = remove_trailing_punctuation(
-                        conference_number).lstrip('(').rstrip(')')
-                    if len(data) > 0:
-                        agent['conference_number'] = data
-                    # agent[
-                    #     'conference_number'] = remove_trailing_punctuation(
-                    #     conference_number).lstrip('(').rstrip(')')
+                    numbering = remove_trailing_punctuation(
+                        numbering).lstrip('(').rstrip(')')
+                    if numbering:
+                        agent['numbering'] = numbering
                 if value.get('d'):
                     conference_date = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'd')
@@ -491,11 +529,10 @@ def marc21_to_contribution(self, key, value):
                         conference_date
                     ).lstrip('(').rstrip(')')
                 if value.get('c'):
-                    conference_place = not_repetitive(
+                    place = not_repetitive(
                         marc21.bib_id, marc21.bib_id, key, value, 'c')
-                    agent[
-                        'conference_place'] = remove_trailing_punctuation(
-                        conference_place
+                    agent['place'] = remove_trailing_punctuation(
+                        place
                     ).lstrip('(').rstrip(')')
         if value.get('4'):
             roles = []
@@ -1327,9 +1364,9 @@ def marc21_to_part_of(self, key, value):
                 )
 
 
-@marc21.over('identifiedBy', '^930..')
+@marc21.over('identifiedBy', '^93[05]..')
 @utils.ignore_value
-def marc21_to_identifiedBy_from_field_930(self, key, value):
+def marc21_to_identified_by_from_field_9xx(self, key, value):
     """Get identifier from field 930."""
     subfield_a = not_repetitive(
         marc21.bib_id, marc21.bib_id, key, value, 'a', default='').strip()

@@ -25,11 +25,14 @@ from invenio_chamo_harvester.tasks import (process_bulk_queue,
                                            bulk_record)
 from invenio_chamo_harvester.utils import get_max_record_pid
 from invenio_jsonschemas import current_jsonschemas
+from jsonschema import validate
+from jsonschema.exceptions import ValidationError
 from invenio_pidstore.models import PersistentIdentifier, PIDStatus,\
     RecordIdentifier
 from invenio_records.api import Record
 from rero_ils.modules.cli import fixtures
-from rero_ils.modules.utils import get_record_class_from_schema_or_pid_type
+from rero_ils.modules.utils import get_record_class_from_schema_or_pid_type, \
+    get_schema_for_resource
 from rero_ils.modules.documents.api import Document
 from rero_ils.modules.patrons.api import Patron
 from rero_ils.modules.items.api import Item
@@ -39,6 +42,9 @@ from rero_ils.modules.circ_policies.api import CircPolicy
 from rero_ils.modules.documents.models import DocumentIdentifier
 from sqlalchemy import func
 from invenio_db import db
+from werkzeug.local import LocalProxy
+
+_records_state = LocalProxy(lambda: current_app.extensions['invenio-records'])
 
 
 def abort_if_false(ctx, param, value):
@@ -227,17 +233,55 @@ def run(initial, delayed, concurrency, bulk_index):
 
 
 @chamo.command("record")
-@click.option('--bibid', '-i', default=0, type=int,
-              help='BIBID of the record.')
+@click.option('--id', '-i', default=0, type=int,
+              help='ID of the record.')
+@click.option('--validation', '-v', is_flag=True,
+              help='Validate record with schema.')
 @with_appcontext
-def record(bibid):
+def record(id, validation):
     """Run transform to invenio record."""
-    if bibid > 0:
-        try:
-            print(json.dumps(
-                bulk_record(ChamoBibRecord.get_record_by_id(bibid))))
-        except:
-            pass
+    if id > 0:
+        rec = bulk_record(ChamoBibRecord.get_record_by_id(id))
+        if validation:
+            # validate record
+            path = current_jsonschemas.url_to_path(
+                get_schema_for_resource('doc'))
+            schema = current_jsonschemas.get_schema(path=path)
+            schema = _records_state.replace_refs(schema)
+            try:
+                if not rec['document'].get('pid'):
+                    rec['document']['pid'] = 'dummy'
+                validate(rec['document'], schema)
+                del rec['document']['pid']
+                if rec['holdings']:
+                    path = current_jsonschemas.url_to_path(
+                        get_schema_for_resource('hold'))
+                    schema = current_jsonschemas.get_schema(path=path)
+                    schema = _records_state.replace_refs(schema)
+                    for holding in rec['holdings']:
+                        if not holding.get('pid'):
+                            holding['pid'] = 'dummy'
+                        validate(holding, schema)
+                        del holding['pid']
+                if rec['items']:
+                    path = current_jsonschemas.url_to_path(
+                        get_schema_for_resource('item'))
+                    schema = current_jsonschemas.get_schema(path=path)
+                    schema = _records_state.replace_refs(schema)
+                    for item in rec['items']:
+                        if not item.get('pid'):
+                            item['pid'] = 'dummy'
+                        if not item.get('barcode'):
+                            item['barcode'] = 'dummy'
+                        validate(item, schema)
+                        del item['pid']
+                        del item['barcode']
+            except ValidationError as err:
+                click.secho(
+                    'Error validating record',
+                    fg='red')
+                raise Exception(err)
+        print(json.dumps(rec))
 
 @chamo.command("document")
 @click.option('--bibid', '-i', default=0, type=int,

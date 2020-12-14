@@ -344,11 +344,10 @@ def bulk_record(record):
                                         doc_type='documents',
                                         pid=document.get('pid'))
 
-        document_type = document.get('type')
         map_holdings = {}
         holdings = []
         for idx, holding in enumerate(record.holdings):
-            new_holding = {}
+            new_holding = deepcopy(holding)
             new_holding['$schema'] = holding_schema
             new_holding['document'] = {
                 '$ref': uri_documents
@@ -363,12 +362,6 @@ def bulk_record(record):
                 location=holding.get('location'),
                 cica=holding.get('circulation_category'))
 
-            # holding without items must be serial
-            holdings_type = 'serial' \
-                if document_type == 'journal' \
-                and not has_items(holding_map, record.items) else 'standard'
-            new_holding['holdings_type'] = holdings_type
-
             map_holdings.update({
                     holding_map: idx
                 }
@@ -377,7 +370,7 @@ def bulk_record(record):
 
         items = []
         for item in record.items:
-            new_item = {}
+            new_item = deepcopy(item)
             new_item['$schema'] = item_schema
             new_item['document'] = {
                 '$ref': uri_documents
